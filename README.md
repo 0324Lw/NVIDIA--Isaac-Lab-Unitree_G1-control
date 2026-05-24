@@ -1,510 +1,624 @@
-# 🚶 基于 NVIDIA Isaac Lab 的 Unitree G1 人形机器人 RL 步态与控制
+Unitree G1 README.md Markdown 源码
+说明：本文档内容可复制到 GitHub 仓库根目录的 README.md 中。正文保留 Markdown 标题、表格、代码块和图片路径。
 
+
+# 🤖 基于 NVIDIA Isaac Lab 的 Unitree G1 人形机器人纯 RL 控制项目
+ 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.x-orange)
-![OS](https://img.shields.io/badge/os-Ubuntu_24.04-green)
-![Isaac](https://img.shields.io/badge/Isaac%20Lab-0.54-brightgreen)
-
-本项目致力于使用深度强化学习实现 23+ 自由度（23+ DOF）人形机器人 Unitree G1 的自主步态生成、零拉力极限平衡及高仿真度抗重力行走，并面向真实物理样机进行高鲁棒性的 Sim2Real（仿真到现实）部署准备。
-本项目彻底摒弃了老旧的框架，基于 NVIDIA 官方开源的下一代物理仿真平台 Isaac Lab，直接调用底层高精度校准的物理引擎。项目采用纯张量化的并行训练架构，核心逻辑采用“高频底层 PD 闭环 + 低频 RL 目标残差策略”，并深度融合了 AMP (Adversarial Motion Priors) 动捕数据先验与工业级 6 层奖励架构，精确地模拟了 G1 真实电机的物理阻尼与发力极限。
-
----
-
-## 🛠️ 硬件与系统要求 (Hardware & OS)
-
-*   **操作系统**：Ubuntu 24.04 LTS
-*   **GPU 算力**：NVIDIA RTX 5060 Laptop (8GB VRAM) 或同等支持 Ada Lovelace 架构的显卡
-*   **底层驱动**：CUDA 12.x，显卡驱动版本 $\ge$ 580.126
-*   **仿真平台**：Isaac Sim 4.x + Isaac Lab 0.54
-*   **环境管理**：Miniconda / Anaconda
-
----
-
-## 🚀 基础准备：物理仿真环境配置
-本项目依赖于 NVIDIA Isaac 系列套件，请确保已按照官方文档安装好基础环境，并激活了对应的 Conda 虚拟环境。
-
-### Step 1. 创建虚拟环境与安装 Isaac Lab
-建议使用 Isaac Lab 自带的整合安装脚本，确保所有 C++ 刚体动力学扩展被正确编译，并在完成后刷新环境变量：
-```bash
-# 进入 Isaac Lab 根目录
-cd ~/IsaacLab
-# 创建并安装环境
-./isaaclab.sh --install
-# 刷新系统环境变量，确保 conda 和 Isaac Lab 路径生效
-source ~/.bashrc
-# 激活 isaaclab 虚拟环境
-conda activate isaaclab
-```
-
-### Step 2. 安装强化学习后端与分析组件
-本项目采用高度模块化且极其稳定的 Stable-Baselines3 (SB3) 作为 PPO 算法后端，同时需要数据分析库进行沙盘压测：
-```bash
-pip install stable-baselines3 pandas matplotlib tqdm
-```
-
-### Step 3. 下载 G1 核心资产与动捕数据对齐
-进入本项目工作目录。在进行物理仿真前，需要拉取 Unitree G1 的原生 USD 模型文件，并将人类的动作捕捉数据清洗、重映射至 G1 的 25 维动作空间：
-```bash
-# 下载/链接 G1 USD 模型资产至当前目录 (如已有 g1.usd 可跳过)
-# 注：此处假设通过软链接或下载脚本获取资产
-ln -s /path/to/your/unitree_g1_assets/g1.usd ./g1.usd
-# 运行 AMP 动捕数据处理脚本，生成训练所需的所有动捕数据（本项目采用简单的公式生成，需要标准数据请自行处理）
-python process_amp_to_g1.py
-python process_amp_to_g1_2.py
-python process_amp_to_g1_3.py
-python process_amp_to_g1_4.py
-```
-(预期结果)：终端打印出特征维度对齐信息，并在当前目录下成功生成尺寸匹配的张量文件，供后续环境类加载。
-
-### Step 4. 物理引擎与底层 PD 驱动测试
-双足人形机器人具有极高的不稳定性和复杂的运动学链。在进入神经网络端到端训练之前，必须首先验证所有关节的底层 PD 控制器是否正常映射与运作：
-```bash
-# 运行底层物理验证与控制测试脚本
-python G1_control.py
-```
-(预期结果)：弹出 Isaac Sim 3D 图形界面，场景中出现 Unitree G1。机器人将从 “断电瘫软” 状态瞬间启动全身刚度，进入设定的初始默认姿态（如双臂自然下垂、双腿微曲的预备动作）。你可以使用鼠标右键或中键拖拽 G1 的躯干，感受逼真的 Kp/Kd 刚体阻尼反馈，确保模型没有异常的穿模或关节反折现象。
-
-## ➡️ Task 1: 零拉力极限平衡与类人步态强化学习控制
-
-本任务是双足人形机器人（Humanoid）迈向具身智能的第一步，也是跨越“站立”到“行走”最艰难的基石挑战。要求 **23+ 自由度的 Unitree G1** 机器人在没有任何物理天车（Harness）辅助的情况下，克服严重欠驱动与极高的重心不稳定性，通过 **“622 工业级奖励架构”** 与 **AMP (Adversarial Motion Priors)** 动捕先验，提炼出自然、平顺且高度鲁棒的类人抗重力步态。
-
-### 1. 任务描述
-
-**初始状态**：机器人处于默认的微曲预备站姿，随机分配至物理网格原点，可能伴有极高比例的初始天车悬挂保护（Harness Ratio）。
-
-**环境配置**：
-- **混合天车课程学习**：初始悬挂力抵消大部分重力，随着训练步数与前向速度的表现，拉力自适应且强制性衰减至 0。
-- **前庭觉与相位时钟**：为机器人补充了类似人类内耳前庭的“基座线加速度”感知，以及诱导左右脚交替迈步的极简 CPG 正余弦相位时钟。
-- **动态防线约束**：开启了自碰撞物理防线，并在观测与底层运算中解耦了上肢与下肢的控制权重。
-
-**任务目标**：
-输出 **25 维关节** 的连续目标角度残差。在逐渐失去保护伞的过程中，学会双足协同支撑，保持机身直立并以 **0.5 m/s** 的目标速度平稳向前巡航。
-
-**判定标准**：
-- **完美巡航**：在 0 保护拉力下，维持 0.52m 以上的安全重心高度，克服打滑与自重，步态连续且不出现“僵尸臂”等畸形动作。
-- **物理极刑**：重心高度低于 0.52m，或发生超过安全阈值的翻滚/俯仰（重力投影偏离过大），即刻触发严厉死亡极刑扣分（**-1.0**）并强制重置。
-
-**核心挑战**：
-1. **僵尸臂陷阱**：智能体发现平举双臂可以最大化转动惯量，从而极其缓慢地倾倒，白嫖大量的存活分。
-2. **袋鼠跳漏洞**：为了最大化“离地奖励”并规避“脚底打滑惩罚”，智能体选择双脚同时起跳的畸形步态。
-3. **叠罗汉与物理穿模**：并行环境下坐标重置不当导致的挤压爆炸，以及动作输出高频抽搐导致的底层求解器崩溃。
-
-### 2. 代码架构与运行指南
-本任务的核心代码位于 `task1` 文件夹下。
-
-```bash
-# 获取项目代码
-git clone https://github.com/0324Lw/NVIDIA--Isaac-Lab-Unitree_G1-control-.git
-cd NVIDIA--Isaac-Lab-Unitree_G1-control/task1
-```
-
-| 文件名 | 功能说明 |
-| :----- | :------- |
-| task1_env.py | G1 核心强化学习环境。内置工业级 6 层奖励架构、前庭觉与 CPG 相位观测、AMP 动捕代理以及混合断奶悬挂防摔机制，并开启自碰撞防御环境叠罗汉。 |
-| task1_test_rewards.py | 白盒沙盘压测脚本。在无头模式下通过强制注入极端动作（挂机、高频抽搐、僵尸臂），反向验证并打印奖励函数的局部最优拦截能力与分布矩阵。 |
-| task1_train.py | 主训练循环。桥接 VecFrameStack 进行 5 帧时序堆叠，引入正交初始化与 Adaptive KL 自适应学习率干预调度器。 |
-| task1_model_test.py | 纯视觉验收脚本。加载训练好的模型与归一化数据（还原时序堆叠空间），开启 GUI 展现 G1 在 0 拉力下的极限抗重力行走。 |
-
-运行训练代码：
-```bash
-python task1_train.py
-```
-
-### 3. 强化学习建模
-人形机器人的自由度极高且呈极度欠驱动状态，极易陷入各种**局部最优**陷阱。本系统重构了深度的观测空间，并设计了防爆破的工业级奖励法则。
-
-#### A. 状态空间定义 (5 帧时序与前庭觉扩容)
-系统将单帧观测维度扩容至 **310 维**，并通过环境桥接器进行了 **5 帧时序堆叠 (Frame Stacking)**，使网络第一层接收 **1550 维** 的高密度张量，相当于赋予了网络 0.1 秒的动态记忆池。
-
-单帧特征包含了基础物理信息与为双足特化的**感官**：
-- **基础本体感觉**：躯干线速度、加入噪声的角速度与重力投影、全身关节残差与关节角速度。
-- **前庭觉 (Vestibular)**：骨盆线加速度（3 维），用于提前感知失衡倾倒，打破“网络不知道自己即将摔倒”的盲区。
-- **时序掩码 (Phase Clock)**：输入极简版 CPG 正余弦相位信号（2 维），诱导左右脚产生交替迈步节律。
-- **足底接触状态 (Contact Mask)**：离地 / 触地的布尔状态掩码（2 维）。
-- **指令与闭环**：目标前向速度 \(v^{cmd}\) 以及上一帧输出动作 \(a_{t-1}\)。
-
-#### B. 动作空间与底层映射 (Action Space & EMA Filter)
-维持所有受控关节的连续残差输出，在输出端施加低通滤波以保护硬件电机：
-- **动作平滑 (EMA)**：引入平滑系数 \(\alpha = 0.5\)，公式：\(a_{current} = 0.5 \cdot a_{net} + 0.5 \cdot a_{last}\)，过滤掉极速翻转的高频阶跃信号。
-- **降维缩放**：网络输出 \([-1.0, 1.0]\) 乘以极其克制的物理缩放系数 (Action Scale = 0.25 rad) 后，叠加到 G1 的初始预备姿态上。
-
-#### C. 奖励函数设计 (622 架构)
-彻底摒弃传统扁平化奖励，构建了严丝合缝的 **“60% 步态主线 + 20% 躯干姿态 + 20% 平顺惩罚”** 的能量地形：
-
-##### 第一层：步态与运动层
-- **前向追踪 R_Vel**：基于高斯核的 \(v_x\) 追踪。
-- **连续型滞空奖励 R_Air_Time**：采用极度严苛的乘法门控。必须产生有效的前向速度（掩码截断），且必须保持单脚踩实地面，才能获得摆动腿的滞空奖励。彻底粉碎网络“双脚同时起跳变袋鼠”骗取滞空分的企图。
-- **侧滑颠簸极刑 P_Cmd_Err**：对 Z 轴垂直速度施加双倍严厉惩罚，封死上下颠簸的局部最优。
-
-##### 第二层：躯干稳定层
-- **质心稳定奖励 R_COM_Stab**：利用脚部接触掩码，在单脚支撑相时，强制降低横向速度，逼迫机器人将质心死死压在支撑脚的投影多边形内。
-- **滚转俯仰极刑 P_Base_Ang**：对 Roll 和 Pitch 施加大额角速度惩罚，锁死上半身。
-
-##### 第三层：关节姿态层
-- **动态权重姿态回归 P_Default_Pos**：利用隔离的权重矩阵，对下肢赋予极低惩罚以解放步态探索，对后 13 个上肢 / 躯干关节的动作偏移施加拉满的二次方差惩罚，直接打断依靠平举手臂增加转动惯量的“僵尸臂”企图。
-
-##### 第四至六层：效率、生存与风格层
-- **安全生存阈值**：将高度跌倒判定放宽至 0.52m，允许双足在迈步承重时发生合理的重心下沉，释放动态探索空间。
-- **高频动作导数与平滑惩罚** (P_Action_Rate / P_Smooth)。
-- **足底打滑与能耗惩罚** (P_Slip / P_Energy)。
-- **AMP 动捕对齐 (R_AMP_Style)**：计算关节位置 / 速度与人类参考轨迹的欧式距离代理分。
-
-### 4. 算法与课程学习细节
-由于零拉力下的双足行走训练极易发生**早期梯度暴毙**，本系统引入了渐进式保护与动态干预机制。
-
-#### A. 混合断奶机制 (Hybrid Harness Decay)
-废弃死板的按步数降低悬挂拉力，采用 **80% 表现衰减 + 20% 强制时间衰减** 的双轨制：
-- **表现衰减**：实时检测机器人的前向平均速度，速度越接近目标 0.5m/s，撤除的拉力越多。
-- **时间衰减**：伴随训练时间强制逐步降低保底拉力，彻底打破网络精准卡在“勉强及格线”以永久白嫖拉力保护的舒适区陷阱。
-
-#### B. 适应性 KL 散度调度器 (Adaptive KL Scheduler)
-在强化学习长达上亿步的训练中，固定学习率容易导致策略崩溃或停滞。引入自定义 `AdaptiveKLCallback`，实时监控策略的近似 KL 散度：
-- 当策略漂移过大（发散），强制降低 Learning Rate。
-- 当策略过于保守（不探索），强制抬高 Learning Rate。
-确保长周期的 Actor-Critic 网络更新幅度始终处于最优信任域内。
-
-## ➡️ Task 2: 全向动态巡航与参考态初始化
-本任务是人形机器人控制从“静态学步”迈向“全向机动”的关键阶段。要求 Unitree G1 在彻底剥离天车辅助（0 拉力）的环境下，响应操作员随机下发的三维摇杆指令（前向速度 $v_x$、侧向速度 $v_y$、自转角速度 $\omega_z$）。通过引入**双轨参考态初始化 (Hybrid RSI)** 机制与 **Omni-622 奖励架构**，并在 Task 1 预训练模型的基础上进行迁移学习，实现走、跑、侧移与原地转向步态的自主解耦与丝滑切换。
-
-### 1. 任务描述
-**初始状态**：采用混合重置机制。80% 概率从全向动捕数据集（Omni-Dataset）中抽取动态帧写入物理引擎（包含初始速度与对应的三维指令）；20% 概率从预备站姿进行零状态（Zero-State）冷启动。
-
-**环境配置**：
-- **物理辅助清零**：彻底移除天车悬挂保护，完全依靠机器人本体动态平衡。
-- **高频指令重采样**：在单一回合内定时（如每 200 步）强制随机突变三维摇杆指令。
-- **低通指令滤波**：对突变的阶跃指令施加一阶低通滤波，模拟真实遥控器摇杆的物理阻尼渐变过程。
-
-**任务目标**：
-在多变的三维速度指令下，输出 25 维连续动作残差，精确追踪目标运动轨迹，并在摇杆归零时实现绝对的物理静止。
-
-**判定标准**：
-- **全向动态追踪**：在约束 Z 轴颠簸的前提下，实际速度向量 $[v_x, v_y, \omega_z]$ 平滑收敛于目标指令。
-- **静止站立硬约束**：指令为 0 时，迅速耗散系统动能，不出现“原地踏步”或“高频抽搐”。
-
-**核心挑战**：
-1. **悬浮滑步陷阱**：在侧向移动中，网络容易发现“保持双脚极低离地间隙进行贴地平移”能规避跌倒风险并获取悬浮奖励，导致双脚极易互绊。
-2. **状态-指令错配**：重置环境时，如果赋予了机器人侧向运动的物理初速度，却下发了前向的运动指令，会导致物理学上的悖论与瞬间摔倒。
-3. **雕像木头人**：躯干稳定惩罚权重设置过大，导致机器人拒绝执行侧步或转向指令（这些动作必然伴随重心的微小偏移）。
-
-
-### 2. 代码架构与运行指南
-本任务的核心代码位于 `task2` 文件夹下。
-
-```bash
-# 获取项目代码
-git clone https://github.com/0324Lw/NVIDIA--Isaac-Lab-Unitree_G1-control-.git
-cd NVIDIA--Isaac-Lab-Unitree_G1-control/task2
-```
-
-| 文件名 | 功能说明 |
-| :----- | :------- |
-| task2_env.py | 全向核心强化学习环境。集成三维指令重采样与滤波、RSI 动态初始化模块。内置针对全向机动调优的 Omni-622 奖励架构。 |
-| task2_env_test.py | 极限压测脚本。在纯随机策略下高速运行 5000 步，校验三维指令张量、重采样触发逻辑、跌倒极刑覆盖率，并输出 Pandas 奖励极值分布表。 |
-| task2_train.py | 迁移学习主循环。接管 Task 1 的预训练权重与特征归一化统计量（VecNormalize.pkl），强制重置学习率进行破局微调。 |
-| task2_model_test.py | 全向视觉验收脚本。以确定性策略渲染机器人步态，并在终端实时打印期望指令矩阵与实际速度矩阵的追踪误差。 |
-
-运行训练代码：
-```bash
-python task2_train.py
-```
-
-### 3. 强化学习建模
-为适应高维度的指令流形，本任务维持了与 Task 1 严格一致的输入输出维度，以确保神经网络权重的无损继承，但在内部特征表达与奖励分布上进行了重构。
-
-#### A. 状态空间定义
-复用 Task 1 状态空间中的补零（Padding）区域，完成全向特征的无缝注入，确保 VecFrameStack 能够正常处理 5 帧时序记忆：
-
-- **基础本体与时序特征**：躯干线 / 角速度、重力投影、关节残差及速度、前庭觉线加速度、CPG 相位时钟、足底接触掩码。
-- **全向指令簇 (Omni-Commands)**：将原本单一的 $v_x$ 指令替换为当前平滑指令 $[v_x, v_y, \omega_z]$ 以及目标最终指令（共 6 维）。使网络同时具备 “当前发力引导” 与 “未来趋势预测” 能力。
-
-#### B. 动作空间与底层映射
-保持 25 维关节位置残差输出。沿用平滑系数 $\alpha = 0.5$ 的 EMA 动作滤波器与 $0.25$ rad 的缩放倍率。
-
-#### C. 奖励函数设计
-针对全向控制，将原有奖励体系升级为具备 “运动 / 静止” 逻辑门控的三维约束体系：
-
-##### 第一层：全向追踪与步态层 (45%+)
-- 二维与偏航追踪 (R_Track_Lin / R_Track_Yaw)：分别对水平面速度和偏航角速度计算指数追踪奖励，占据权重主导地位。
-- 状态门控滞空 (R_Air_Time)：大幅上调权重至 0.30+，并通过 is_moving 逻辑门控严格限制：仅在指令速度 > 0.1 m/s 且误差较小时给予滞空奖励。
-- 削减悬浮 (R_Clearance)：下调离地间隙奖励比重，阻断贴地平移骗分漏洞。
-
-##### 第二层：躯干与静止层 (30%)
-- 动态躯干约束 (P_Base_Ang)：放开 Yaw 轴角速度惩罚以允许原地自转，适度降低 Roll 与 Pitch 惩罚，允许侧移时的自然重心偏移。
-- 零指令静止惩罚 (P_Stand_Still)：新增核心防线。当指令速度 < 0.1 m/s (is_standing 为真) 时，对所有关节的微小运动施加严厉的速度平方惩罚，逼迫底盘物理锁死。
-
-##### 第三层：关节姿态层 (10%)
-- 降权防僵尸臂 (P_Default_Pos)：适度下调手臂惩罚权重，解冻上肢自由度，允许机器人在急转弯或侧滑时自然挥动双臂以代偿角动量。
-
-##### 第四至六层：效率、生存与风格层
-- 移除与时间挂钩的存活分，改为纯粹的常数生存奖励 R_Alive。
-- 下调动作差分平滑惩罚 P_Smooth，赋予机器人响应摇杆突变时的敏捷性。
-- 利用多流形全向动作库计算 R_AMP_Style，引导侧移与转向姿态趋近人类运动学规律。
-
-### 4. 算法与迁移学习细节
-#### A. 突触接管与迁移学习 (Transfer Learning)
-从头训练全向控制将面临样本效率极低的问题。任务 2 通过 PPO.load 完整挂载 Task 1 训练了上亿步的模型权重，并加载 VecNormalize 状态特征分布方差。为了打破 Task 1 固化的局部最优（如只会直行），代码强制干预 PPO 优化器，将学习率重置为较高的 $3 \times 10^{-4}$，对网络进行 “重启电击”。
-
-#### B. 双轨参考态初始化 (Hybrid RSI)
-应对指令重采样后的状态突变，系统重构了回合重置逻辑：从基于矩阵变换生成的高维张量集 `g1_omni_walk.pt` 中均匀采样。写入环境时，不仅重置机器人的全身关节位置与速度，且同步覆写该动作帧对应的三维理想指令。确保了机器人重置时的物理动量惯性与接下来要执行的运动目标严密吻合。
-
-#### C. 指令延时低通滤波 (Command Smoothing)
-真实硬件遥控操作不会产生完美的数学阶跃信号。环境步进时，对目标命令簇引入系数为 0.05 的一阶滤波器。平滑的指令过渡极大减少了动作序列高频导数惩罚的触发率，有效缩减了 Sim-to-Real 的部署鸿沟。
-
-## ➡️ Task 3: 上下肢解耦与全身协调 (Whole-Body Coordination)
-本任务是人形机器人控制从“底盘机动”迈向“高动态全身协同”的进阶阶段。要求 Unitree G1 在解锁极限冲刺（$v_x$ 达 1.2 m/s）与高速急转（$\omega_z$ 达 0.8 rad/s）的指令下，解除上半身的姿态锁定。通过引入**上肢软解冻课程 (Action Space Soft-Switching)**、**非对称动作滤波**与重构的 **Omni-622全身协同奖励架构**，引导机器人自发学会“手脚并用”：在加速或高速过弯时，利用双臂的反相摆动代偿偏航角动量，并利用躯干内倾抵抗离心力。
-
-### 1. 任务描述
-**初始状态**：延续混合重置机制。80% 概率从包含极限机动特征的动作集（g1_extreme_omni.pt）中进行参考态初始化（RSI），并赋予对应的物理初速度；20% 概率进行零状态冷启动。
-
-**环境配置**：
-- **极限指令扩容**：前向速度上限提升至 1.2 m/s，自转角速度提升至 0.8 rad/s，通过高频重采样制造极端动力学失衡环境。
-- **非对称动作滤波 (Asymmetric EMA)**：针对上下肢的动力学需求差异，下肢维持 $\alpha=0.5$ 的高通滤波系数以保证步态稳定，上肢与腰部调整为 $\alpha=0.2$ 以赋予其快速响应代偿的敏捷度。
-- **上肢解封课程**：在环境 step 函数中引入基于全局步数的激活系数（arm_activation），使上肢动作指令从 0 线性过渡至 1，实现渐进式解耦。
-
-**任务目标**：
-在不产生关节穿模和异常步态的前提下，利用全身 25 个自由度精确追踪高动态指令，并展现出符合人类运动学特征的**对侧肢体协同（Contralateral Coordination）**。
-
-**核心挑战**：
-1. **局部最优步态（瘸腿与直腿）**：网络为规避能耗与平滑惩罚，易演化出“单腿发力、单腿拖拽”的不对称步态；或为获取滞空奖励，演化出膝盖锁死的“踢正步”高跷姿态。
-2. **无效角动量代偿**：在未受显式引导时，网络可能通过高频扭动腰部制造虚假的角动量抵消，而非真实的手臂协同。
-3. **摆臂穿模冲突**：上肢解锁后，大幅度的代偿摆动极易导致左右臂向内侧收缩交叉，引发物理引擎自碰撞检测与解算震荡。
-
-### 2. 代码架构与运行指南
-本任务的核心代码位于 `task3` 文件夹下。
-
-```bash
-# 进入任务3工作目录
-git clone https://github.com/0324Lw/NVIDIA--Isaac-Lab-Unitree_G1-control-.git
-cd NVIDIA--Isaac-Lab-Unitree_G1-control/task3
-```
-
-| 文件名 | 功能说明 |
-| :----- | :------- |
-| process_amp_to_g1_3.py | 全身协同数据生成引擎。基于运动学公式合成包含动态摆臂振幅（与速度绑定）与向心力压弯姿态的张量数据。 |
-| task3_env.py | 全身协同强化学习环境。内置非对称 EMA 滤波、上肢软切换课程逻辑及 Omni-622 v3 奖励架构。 |
-| task3_env_test.py | 压测与验证脚本。对上肢解封逻辑、动捕张量格式及奖励分布进行沙盒随机策略测试。 |
-| task3_train.py | 迁移微调主循环。接管 Task 2 的预训练权重与分布数据，重启学习率与超参数进行进阶训练。 |
-| task3_model_test.py | 视觉验收与渲染脚本。将上肢激活率强制设为 100%，以 GUI 形式渲染并导出机器人高速协同录像 (MP4)。 |
-
-运行训练代码：
-```bash
-python task3_train.py
-```
-
-### 3. 强化学习建模
-本任务在保持 **1550 维状态空间（310 维 × 5 帧堆叠）** 与 **25 维动作空间** 不变的基础上，对底层动作映射与奖励函数进行了重构，以消除上下肢的耦合冲突。
-
-#### A. 状态空间与底层映射
-- **双轨特征维持**：状态输入继续融合前庭觉线加速度、CPG 相位时钟与平滑指令簇。
-- **非对称动作限幅**：底层物理步进时，对下肢应用强滤波（求稳），对上肢应用弱滤波（求快）。同时乘以环境层计算的 arm_activation 系数，替代网络架构层面的权重冻结，实现更平滑的训练过渡。
-
-#### B. 奖励函数设计
-针对全身协同需求，奖励体系修正了多项代理误差，新增显式的运动学约束：
-
-##### 第一层：高动态追踪与步态层
-- 追踪权重上调 (R_Track_Lin / R_Track_Yaw)：提高指令追踪权重，强化对冲刺与急弯目标的服从性。
-- 理性滞空与悬浮 (R_Air_Time / R_Clearance)：回调滞空奖励比重，恢复适度的离地间隙奖励，防止过度腾空导致的 “高跷步态”，引导机器人弯曲膝盖迈步。
-
-##### 第二层：动态躯干与静止层
-- 动态压弯宽容 (P_Base_Ang)：放弃单一的固定 Roll 角惩罚。将躯干横滚角约束与当前侧移速度 (v_y) 及自转指令 (w_z) 线性绑定，当检测到转弯意图时，动态降低惩罚，允许向内侧压弯抵消离心力。
-- 底盘静止约束 (P_Stand_Still)：将静止惩罚的目标从 “全体关节速度” 更改为 “底盘实际位移”，允许静止状态下合理的关节微调震颤。
-
-##### 第三层：关节解耦与防穿模防线
-- 松弛默认姿态 (P_Default_Pos)：对肩部与腰部关节引入 Slack（宽容区）机制，在指定弧度范围内偏离默认姿态不再产生惩罚，彻底解绑上半身。
-- 定向穿模拦截 (P_Arm_Cross)：针对手臂极易发生碰撞的内收轴（Roll 轴负向）设置单侧极刑约束，精准拦截手臂交叉打胸的动作。
-
-##### 第四层：动力学显式协同层
-- 对侧手脚反相协同 (R_Arm_Leg_Sync)：舍弃不稳定的角加速度代理惩罚，直接计算对侧肢体的速度乘积（如左髋 Pitch 速度与右肩 Pitch 速度）。同向运动即产生正收益，明确引导网络学习规范的对称摆臂节律。
-
-##### 第五至六层：生存与能耗层
-- 能耗与平滑松绑：大幅下调平滑惩罚 (P_Smooth) 与能耗惩罚 (P_Energy)，解除网络为了省力而演化出的 “瘸子步态”（单腿拖拽）限制，鼓励双腿匀称发力。
-
-### 4. 算法与数据合成细节
-#### A. 启发式协同数据合成
-在 process_amp_to_g1_3.py 中，静态的动捕数据被替换为与指令强相关的动态映射模型：
-- 动态摆臂振幅：肩关节的摆动幅度直接与 v_x 强度绑定（0.5 m/s 时幅度为 0.3 rad，1.2 m/s 时拉满至 0.8 rad），静止时自然下垂。
-- 向心力倾角注入：当轨迹流形存在较高的 v_x * w_z 乘积时，算法会在腰部自动计算并注入侧向 Roll 倾角与外侧手臂外展角度，为网络提供压弯的 AMP 先验特征。
-
-#### B. 迁移微调与自适应探索
-模型加载 Task 2 的全向巡航权重后，面临上肢状态突变。通过重置 PPO 学习率（3e-4）与维持较大的探索标准差（std ≈ 0.44），网络能够在长达百万步的上肢解封课程中，逐步将下肢固化的平衡记忆与新加入的上肢动力学特征完成融合。
-
-## ➡️ Task 4: 定速奔跑与 Sim2Real 极限抗扰
-本任务是人形机器人控制从“无菌仿真环境”走向“真实物理世界”的最后一道龙门。要求 Unitree G1 在纯前向的高速马拉松配速下（$v_x$ 达 1.5 ~ 2.0 m/s），扛住来自环境的恶意物理摧残。通过引入 **RMA (Rapid Motor Adaptation) 特权教师架构**、**结构化域随机化 (Structured DR)**、异步动作延迟与状态估计漂移，彻底重塑机器人的鲁棒性。配合**自适应学习率**与重构的 **Omni-622奖励架构**，成功打破单腿拖拽的局部最优，训练出一个能在烂路、推搡、电机发热与通信延迟中稳定狂奔的“马拉松战士”。
-
-### 1. 任务描述
-**初始状态**：采用马拉松专属的混合重置机制。80% 概率从包含极大前倾角与收臂姿态的阶梯配速数据集（g1_marathon_cpg.pt）中进行参考态初始化（RSI）；20% 概率进行零状态冷启动。同时，在每个回合初始化时随机分配该回合的环境物理盲盒参数。
-
-**环境配置（Sim2Real 极限挑战）**：
-- **纯粹巡航流形**：剥离侧向与自转指令，前向速度指令锁定在 $[0.8, 2.0]$ m/s，倒逼网络将网络容量全部用于极限抗扰与维持步态节律。
-- **结构化域随机化 (Structured DR)**
-  - 质量偏移：随机为躯干增加附加负载 $m_{offset} \in [0.0, 5.0]$ kg。
-  - 摩擦力异变：地面摩擦系数 $\mu \in [0.6, 1.2]$ 随机波动。
-  - 执行器热衰减：随机削减电机输出力矩至标称值的 $85\% \sim 100\%$。
-- **全链路非理想通信**
-  - 异步动作延迟：维护定长动作队列，指令下发延迟 $\tau \in [0, 60]$ ms 异步抖动。
-  - OU 过程状态漂移：模拟真实 IMU 积分误差，对速度观测注入低频随机游走漂移与高频白噪声。
-- **相位精准打击 (Phase-Targeted Pushes)**：在机器人处于最脆弱的换步期（步态相位 $\phi \approx 0.0$ 或 $0.5$）时，向底盘施加 $[-200, 200]$ N 的真实三维物理扳手外力（Wrench），模拟人群碰撞。
-
-**任务目标**：
-在面临未知物理畸变与随机踹击的情况下，不依赖绝对准确的本体感受器，利用时序历史记忆维持双腿对称的定速奔跑，并在受击后快速恢复稳态。
-
-**核心挑战**：
-1. **“省电雕像”与局部最优**：网络极易发现“站着不动”或“单腿拖拽”最省电且不易跌倒。
-3. **漂移发散导致导航失效**：长距离马拉松下，累积的 IMU 漂移会让机器人产生速度错觉，导致彻底失控。
-
-### 2. 代码架构与运行指南
-本任务的核心代码位于 `task4` 文件夹下。
-
-```bash
-# 进入任务4工作目录
-git clone https://github.com/0324Lw/NVIDIA--Isaac-Lab-Unitree_G1-control-.git
-cd NVIDIA--Isaac-Lab-Unitree_G1-control/task4
-```
-
-| 文件名 | 功能说明 |
-| :----- | :------- |
-| process_amp_to_g1_4.py | 马拉松专属数据生成引擎。合成包含躯干极限前倾（抵消风阻与后仰）、肘部收紧（减小转动惯量）以及高频大跨步张量数据。 |
-| task4_env.py | Sim2Real 抗扰核心环境。内置 RMA 特权信息打包、异步延迟队列、物理外力注入与 Omni-622 v4 奖励架构。 |
-| task4_env_test.py | 工业级防弹压测脚本。在纯随机策略下运行 5000 步，校验维度的广播合法性、推力注入有效性、以及奖励值的统计学方差。 |
-| task4_train.py | “电击疗法” 主循环。接管 Task 3 模型，以超大学习率与宽容的 KL 散度倒逼网络破除 “瘸腿” 局部最优，完成抗扰进化。 |
-
-运行训练代码：
-```bash
-python task4_train.py
-```
-
-### 3. 强化学习建模与 Sim2Real 域随机化深度解构
-本任务的核心难点在于跨越“仿真与现实的鸿沟（Sim2Real Gap）”。在 Task 1-3 中，机器人处于一个无延迟、无磨损、传感器绝对精准的完美“真空”物理引擎中；而在 Task 4 中，机器人必须学会应对真实世界中由于机械公差、热衰减、通信延迟以及外部碰撞带来的混沌动力学。为此，我们在输入/输出端全面注入了结构化域随机化（Structured Domain Randomization），并对 Omni-622 v4 奖励架构进行了工业级重构，引入了符合物理直觉的能量代理模型与恢复机制。
-
-#### A. 状态空间组成与 Sim2Real 观测畸变建模 (Observation Space)
-为了让网络适配真实硬件，状态空间（Observation Space）不仅需要包含机器人的本体感觉，还必须经过人为的“污染”与“时序扩维”。单帧状态基础维度经补零对齐为 310 维，并通过 VecFrameStack 进行连续 5 帧的历史堆叠，总输入维度达到 1550 维。这种时序堆叠是 RMA 架构中隐式推断（Implicit System Identification）的基石。
-
-##### 1. 状态空间核心物理组分
-- **底盘线速度与角速度 (Base Linear/Angular Velocity)**：$[v_x, v_y, v_z, \omega_x, \omega_y, \omega_z]$，表征底盘绝对运动状态。
-- **重力投影向量 (Projected Gravity)**：$[g_x, g_y, g_z]$，提供基于 IMU 的倾角参考，替代容易产生万向节死锁的欧拉角。
-- **关节残差与速度 (Joint Position/Velocity)**：25 维当前关节位置（相对于默认站姿的残差）与 25 维当前关节角速度。
-- **动作历史缓冲 (Action History)**：包含上一帧动作（$a_{t-1}$）以及展平的前 3 帧动作历史（$a_{t-1}, a_{t-2}, a_{t-3}$），共计 100 维。这是识别通信延迟和执行器阻抗的绝对核心特征。
-- **足底接触布尔状态 (Contact States)**：左右脚是否触地的 0/1 掩码，判定阈值严格提高至 15N，以过滤真实环境中的足底震动噪点。
-- **指令簇 (Commands)**：包含经过低通滤波的当前指令（Smoothed Command）与最终目标指令（Target Command）。
-- **步态相位时钟 (Phase Clock)**：$[\sin(2\pi\phi), \cos(2\pi\phi)]$，基于 CPG (Central Pattern Generator) 的时间变量，为网络提供抬腿与落足的强制节律参考。
-
-##### 2. Sim2Real 观测畸变注入策略
-真实世界中的传感器（如 Intel RealSense 或内置 IMU）从来不是完美的。我们在提取上述状态时，引入了两种针对性的畸变：
-- **高频白噪声 (High-Frequency White Noise)**：对底盘速度和关节编码器读数注入 $\mathcal{N}(0, 0.05^2)$ 的高斯噪声，模拟传感器的高频采样底噪。
-- **低频状态估计漂移 (IMU Drift via OU-Process)**：这是真实里程计（Odometry）最致命的问题。如果采用纯随机游走（Random Walk），状态在长回合马拉松中会无限发散。因此我们采用 Ornstein-Uhlenbeck (OU) 过程对 $v_{xy}$ 和 $\omega_z$ 注入带衰减的漂移：
-
-$$d_{t} = 0.995 \cdot d_{t-1} + \mathcal{N}(0, 0.005^2)$$
-
-这迫使策略网络绝对不能“死信”本体感觉，必须通过时序记忆中的关节发力反馈与步态节律来交叉验证真实的运动状态。
-
-#### B. 动作空间组成与 Sim2Real 传动畸变建模 (Action Space)
-动作空间输出为一个 25 维的向量，值域限定在 $[-1.0, 1.0]$。该输出并不直接作为位置指令下发给关节，而是作为残差乘以缩放系数（action_scale = 0.25 rad）后，叠加在机器人的微曲默认站姿（Default Posture）之上。
-
-##### 1. Sim2Real 延迟与通信建模 (Delay & Latency)
-在真实机器人系统中，从“传感器读取 -> 主板推理 -> CAN 总线下发 -> 舵机响应”，存在数十毫秒的物理延迟。
-- **异步固定延迟队列 (Asynchronous Fixed Delay)**：我们没有采用每帧跳变的白噪声延迟（这在物理上是不可能的，会导致 Temporal Noise）。相反，我们在每个回合（Episode）重置时，为该环境随机采样一个固定延迟步长 $\tau \in [0, 3]$（对应 0 ~ 60ms）。动作下发时被推入环形队列 action_delay_buffer，物理引擎提取的永远是过去第 $\tau$ 帧的动作。这倒逼网络学会“提前量补偿”控制。
-
-##### 2. Sim2Real 执行器劣化建模 (Actuator Degradation)
-- **电机热衰减 (Motor Efficiency Scaling)**：马拉松长跑会导致关节电机（尤其是膝关节）发热，使得磁通量下降、输出力矩变软。我们在回合重置时，为全身 25 个关节随机分配了一个效率衰减系数 dr_motor_efficiency $\in [0.85, 1.0]$。网络输出的动作指令会被强制乘以该系数。这迫使网络在发现“腿变软”时，能够自适应地输出更大的动作指令进行代偿。
-- **上下肢非对称 EMA 滤波 (Asymmetric Action Filtering)**：下发给物理引擎前，动作需要经过一阶低通滤波。为了求稳，下肢截断频率较低（$\alpha=0.5$）；而上肢和腰部为了能够像人类一样快速甩臂代偿角动量，采用了敏捷滤波（$\alpha=0.2$）。
-
-#### C. Omni-622 v4 奖励函数深度解构 (Reward Architecture)
-在存在庞大外力干扰的 Sim2Real 场景中，奖励函数极易引发“奖励黑客行为（Reward Hacking）”。例如，为省电而拖拽一条腿，或者为了防止倾倒惩罚而将全身关节锁死。Omni-622 v4 奖励架构包含近 20 项子奖励，按物理优先级划分为六大层级。我们在设计时严格统一了各组件的奖励缩放尺度（Reward Scale），确保 PPO 的优势函数方差保持平稳。
-
-##### 第一层：高动态追踪与步态核心层 (Kinematics & Tracking)
-此层级定义了马拉松任务的绝对最高优先级：按照指定速度向前冲刺，并维持有节律的滞空步态。
-- **线速度追踪 (R_Track_Lin) / 偏航角速度追踪 (R_Track_Yaw)**
-  - 公式: $\exp(-4.0 \cdot \|v_{xy} - cmd_{xy}\|^2)$
-  - 物理意义: 高斯核函数奖励。评估底盘实际水平面速度向量与指令向量的欧氏距离误差。在马拉松任务中，侧向指令设为 0，前向指令设定为 1.5 ~ 2.0 m/s。指数形式可以提供平滑的梯度，引导机器人不断向目标配速逼近。
-
-- **足底滞空奖励 (R_Air_Time)**
-  - 公式: $\sum_{feet} (\Delta t \cdot \mathbb{I}_{off\_ground} \cdot \mathbb{I}_{single\_contact} \cdot \mathbb{I}_{moving})$
-  - 物理意义: 仅在机器人有一只脚在地上、另一只脚腾空（单脚支撑期）且正在移动时，根据腾空的时间累积正向奖励。
-  - Sim2Real 价值: 彻底根除深度学习常见的“双脚贴地滑行”局部最优，强制逼出人类般的交替奔跑步态。
-
-- **离地间隙奖励 (R_Clearance)**
-  - 公式: $\exp(-10.0 \cdot |z_{foot} - 0.05|)$
-  - 物理意义: 当脚离地时，其高度越接近设定的 5cm（0.05m），奖励越高。这配合滞空奖励，防止机器人演化出“僵尸高跷步”（膝盖锁死，整条腿硬甩）。
-
-- **Z轴颠簸惩罚 (P_Z_Vel)**
-  - 公式: $-2.0 \cdot |v_z|$
-  - 物理意义: 惩罚机器人重心的垂直震荡速度，迫使策略寻找能量最优的谐振奔跑频率，避免过度跳跃浪费机械能。
-
-##### 第二层：动态安全边界与主动恢复层 (Safety & Recovery)
-此层级是抗推搡（Disturbance Rejection）的核心。它打破了传统 RL 中“只要倾斜就重罚”的死板规定，允许了极限求生动作。
-- **姿态绝对垂直奖励 (R_Upright)**
-  - 公式: $\exp(-5.0 \cdot \sum(g_{proj, xy}^2))$
-  - 物理意义: $g_{proj, xy}$ 是重力向量在机器人本体坐标系 XY 平面的投影。当机器人绝对站直时，投影为 0，奖励最大。
-  - Sim2Real 价值: 传统做法（如 $(1-g_z)/2$）在机器人接近倾倒翻转时存在梯度消失与非对称能量陷阱。该指数级惩罚在机器人严重倾倒时能提供极其锐利的回正梯度，是 Locomotion 领域的标准防侧翻防线。
-
-- **躯干晃动惩罚与动态宽容 (P_Base_Ang)**
-  - 公式: -( w_x^2 * (1 - roll_tol) + w_y^2 )，其中 roll_tol 根据当前偏航速度动态计算。
-  - 物理意义: 惩罚非必要的翻滚角与俯仰角速度。但当指令要求急转弯时，roll_tol 会增加，允许机器人像摩托车一样向内侧自然压弯抵消离心力。
-
-- **受击主动恢复奖励 (R_Recovery) [极重要]**
-  - 公式: $\exp(-5.0 \cdot |v_x - cmd_x|) \cdot \mathbb{I}_{pushed}$
-  - 物理意义: 这是区别于传统 RL 的“恢复窗口（Recovery Horizon）”机制。当机器人检测到受到巨大的外部推力（$\mathbb{I}_{pushed}=1$）后，不仅不惩罚其短时间的偏离，反而设立高额悬赏：只要它能在踉跄中重新把前向速度拉回目标值，就给予一次性巨大奖励。
-  - Sim2Real 价值: 阻止了网络学出“一被推就干脆摆烂重置”或“通过主动倾倒骗取惩罚豁免”的 Reward Hacking 行为。它正向鼓励了人类被绊倒时的连续碎步救场机制。
-
-- **底盘零指令静止惩罚 (P_Stand_Still)**
-  - 公式: $- \|v_{base, xy}\| \cdot \mathbb{I}_{standing}$
-  - 物理意义: 当指令速度为 0 时，直接惩罚底盘的漂移位移。相比于惩罚关节静止，这允许真机在原地由于装配公差产生微小的关节动态平衡震颤。
-
-##### 第三层：仿生解耦与防碰撞层 (Biomimetics & Decoupling)
-引导全身 25 个关节从一团散沙，组织成高度协同的类人运动链。
-- **松弛态姿态回归 (P_Default_Pos)**
-  - 公式: $-\sum \max(|q - q_{def}| - \text{slack}, 0)^2$
-  - 物理意义: 鼓励关节保持在默认曲腿站姿附近。但是为手臂（slack=0.3）和腰部（slack=0.2）设置了宽容死区。在此范围内自由扭动代偿角动量，不会扣除任何分数。
-
-- **内收轴穿模拦截 (P_Arm_Cross)**
-  - 公式: $\text{ReLU}(-q_{shoulder\_roll\_L} - 0.1) + \text{ReLU}(-q_{shoulder\_roll\_R} - 0.1)$
-  - 物理意义: 单侧极刑防线。由于解除了手臂封印，双臂在高速奔跑时极易向胸口内侧疯狂收缩导致物理碰撞。该惩罚像一堵无形的墙，把手臂限制在身体外侧。
-
-- **显式对侧手脚协同 (R_Arm_Leg_Sync)**
-  - 公式: $\dot{q}_{L\_hip\_pitch} \cdot \dot{q}_{R\_shoulder\_pitch} + \dot{q}_{R\_hip\_pitch} \cdot \dot{q}_{L\_shoulder\_pitch}$
-  - 物理意义: 直接将对侧手脚（左腿与右臂）的角速度进行乘积计算。同向摆动即获得正收益。这是让机器人学会“跑步时反相甩动手臂以抵消偏航惯量”的最强归纳偏置。
-
-- **防瘸腿对称性正则化 (P_Symmetry)**
-  - 公式: $-\left( ||q_{L\_hip}| - |q_{R\_hip}|| + ||q_{L\_knee}| - |q_{R\_knee}|| \right)$
-  - 物理意义: 实时比对左侧与右侧对应关节（髋部和膝部）的位置偏差。
-  - Sim2Real 价值: 单机训练中极易陷入“单腿拖拽跑法”的深渊。此惩罚配合电击疗法，能在短时间内通过剧烈的惩罚将病态步态抹杀，逼迫双腿匀称发力。
-
-##### 第四层：硬件生存与能效控制层 (Hardware & Efficiency)
-这一层级的设定决定了策略能否在几万元的真实人形硬件上安全运行，而不烧毁任何一个舵机。
-- **递增存活奖励 (R_Alive)**
-  - 公式: $1.0 + (t_{current} / T_{max})$
-  - 物理意义: 基础的常量存活分（+1.0）不足以诱惑网络在恶劣环境中死战不退。将存活分与回合长度挂钩，活得越久，每步获得的奖励越多，鼓励长期主义。
-
-- **软限位保护 (P_Joint_Limit)**
-  - 公式: -sum( max(Out_of_Bounds, 0) )
-  - 物理意义: 对超出关节物理限位 90% 范围的行为进行惩罚，防止击穿机械限位。
-
-- **一阶动作平滑/加速惩罚 (P_Action_Smooth)**
-  - 公式: $-\sum(a_t - a_{t-1})^2$
-  - Sim2Real 价值: 动作输出 $a_t$ 本质是目标位置，因此其差分在物理机上等效于速度与加速度（Jerk）。我们将此项的权重调高了 20 倍，严厉打击控制指令中的高频“毛刺”。这是保护真实电机齿轮箱不被扫齿剥离的最后一道防线。
-
-- **接触滑动惩罚 (P_Foot_Slip)**
-  - 公式: $-\|v_{foot, xy}\|^2 \cdot \mathbb{I}_{contact}$
-  - 物理意义: 仅在传感器显示足底触地时，惩罚脚底板在 XY 平面的线速度，教导机器人“踩实了再发力”。
-
-- **真实能量运输成本代理 (P_Energy / CoT Proxy) [核心修正]**
-  - 公式: $\text{CoT} = \frac{\sum |\tau_{joint} \cdot \dot{q}_{joint}|}{m_{robot} \cdot g \cdot \max(v_x, 0.2)}$
-  - 物理意义: $P\_Energy$ 是 Sim2Real 中最容易翻车的陷阱。直接使用 $\tau \cdot \dot{q}$ 惩罚功率是致命的，因为重力补偿力矩极大，网络为了“省电”会演化出动作极小的欠驱动步态。
-  - Sim2Real 价值: 我们重构了学术界标准的能量运输成本（Cost of Transport）计算公式。用总发热功率除以（质量 × 重力加速度 × 当前实际前向速度）。该分母意味着：跑得越快，容许消耗的绝对能量就越高。这彻底打消了网络“减速降耗”的顾虑，让其放开手脚奔向 2.0 m/s 的极限马拉松配速。
-
-- **AMP 先验风格奖励 (R_Style)**
-  - 物理意义: 通过与我们前置生成的马拉松极限前倾步态数据集（g1_marathon_cpg.pt）进行 KNN 距离比对计算。作为一种软性引导，提供高速下重心前倾以抵抗风阻的先验知识。为了防止算力爆炸，每步仅随机抽取 64 帧样本进行比对。
+![Isaac Lab](https://img.shields.io/badge/Isaac%20Lab-2.x-brightgreen)
+![skrl](https://img.shields.io/badge/RL-skrl%20PPO%20%7C%20RMA-purple)
+![OS](https://img.shields.io/badge/OS-Ubuntu-green)
  
-### 4. 算法与 Sim2Real 迁移细节
-
-#### A. RMA (Rapid Motor Adaptation) 阶段 A：特权教师网络
-本项目跑通了经典 RMA 架构中最核心的 Phase A (Teacher Policy)。在 `task4_env.py` 的 `info` 字典中，输出了包含 `motor_efficiency`、`friction`、`mass_offset`、`is_pushed` 与 `obs_drift` 的上帝视角特权向量 (Privileged Obs)。虽然在当前的强化学习循环中网络依靠 FrameStack（时序堆叠）硬抗了过去，但这为后续切断特权信息、训练 Student 网络的 TCN/CNN 编码器提供了完美的蒸馏标签。
-
-#### B. “电击疗法”破除深度局部最优
-面对一个已经在 Task 3 中训练好的模型，常规微调会陷入梯度停滞。在 `task4_train.py` 中，采用自适应调参：
-- 初始学习率拉升至 **5e-4**。
-- 调度器的目标 KL 散度上限放宽至 **0.02**（允许一定程度的灾难性遗忘）。
-- 配合 **P_sym** 惩罚的 5 倍放大。
-在这种机制下，初期存活步数会断崖下跌（“没收拐杖”现象），但在几百万步后，网络会被迫重塑底层突触，最终长出强健的双腿，将实际车速推向 1.5 m/s。
-
+本项目是一个基于 NVIDIA Isaac Lab 的 Unitree G1 人形机器人强化学习控制项目。项目包含 4 个递进任务：基础低速行走、全向速度跟踪、全身协同行走、Sim2Real / RMA 鲁棒训练。
+ 
+这个仓库是我在学习人形机器人强化学习控制过程中整理出来的一版纯 RL baseline。最开始我按照机器狗、无人机、无人车项目的思路去写 G1 代码，后来在继续学习 HoloSoma、OmniRetarget、BeyondMimic、OmniTrack、Any2Track 等工作后，我逐渐认识到：复杂人形机器人动作不能只依赖手写奖励和纯强化学习，专业路线通常需要动捕数据、重定向、模仿学习、生成式动作先验和 Sim2Real 体系。
+ 
+因此，这个仓库不会把自己包装成“最优人形机器人控制方案”。它更适合作为一个早期探索版、学习版、纯 RL 教育 baseline 保存下来。它记录了我从四足机器人和其他强化学习任务迁移到人形机器人控制时的经验、困难和踩坑，也希望能为同样在学习 Isaac Lab、人形机器人控制和强化学习的同学提供一个可以参考、可以运行、可以继续修改的基础工程。
+ 
+项目重点不是追求完美动作效果，而是尽量把每个任务的环境、测试、训练、评估和日志拆清楚。代码中仍然有很多可以继续改进的地方，欢迎大家根据自己的 Isaac Lab 版本、显卡配置和研究目标继续修改。
+ 
+---
+ 
+## 🎬 训练效果展示
+ 
+| Scene | Preview |
+|---|---|
+| 基础行走 / 全向运动 | ![G1 locomotion demo](assets/gifs/g1_locomotion_demo.gif) |
+| 全身协同 / Sim2Real 鲁棒训练 | ![G1 whole-body sim2real demo](assets/gifs/g1_whole_body_sim2real_demo.gif) |
+ 
+> 说明：上面的 GIF 路径是预留位置。你可以把自己录制的仿真效果放到 `assets/gifs/` 目录下，并保持文件名一致，或者在 README 中改成自己的文件名。
+ 
+---
+ 
+## ✨ 项目特点
+ 
+- 基于 NVIDIA Isaac Lab 和 Unitree G1 人形机器人资产。
+- 包含 4 个递进任务，从低速行走到全向运动、全身协同和 Sim2Real 鲁棒训练。
+- Task1 / Task2 / Task3 使用 `skrl` PPO 训练流程。
+- Task4 使用独立 RMA PPO 训练流程，包含 teacher / student latent、privileged observation 和 student-only 部署模型导出。
+- 所有 G1 任务环境代码独立实现，不依赖其他任务环境继承，避免任务之间互相污染。
+- 每个任务提供独立环境测试、训练脚本和模型测试脚本。
+- 使用 `tqdm` 风格训练进度条，方便实时查看训练速度、奖励、摔倒率和关键遥测指标。
+- 保留纯 RL baseline 的学习价值，同时明确说明它不是 HoloSoma / BeyondMimic / OmniRetarget 这类专业模仿学习路线。
+ 
+---
+ 
+## 📁 项目结构
+ 
+```text
+unitree_g1_isaaclab_rl/
+├── configs/
+│   ├── task1_locomotion.yaml
+│   ├── task2_omni_locomotion.yaml
+│   ├── task3_whole_body.yaml
+│   └── task4_sim2real.yaml
+├── src/
+│   └── g1_rl/
+│       ├── common/
+│       │   ├── g1_eval_utils.py
+│       │   ├── g1_skrl_models.py
+│       │   ├── g1_skrl_wrappers.py
+│       │   ├── info_utils.py
+│       │   └── paths.py
+│       └── tasks/
+│           ├── task1/
+│           │   ├── task1_config.py
+│           │   ├── task1_env.py
+│           │   ├── task1_train.py
+│           │   └── task1_model_test.py
+│           ├── task2/
+│           │   ├── task2_config.py
+│           │   ├── task2_env.py
+│           │   ├── task2_train.py
+│           │   └── task2_model_test.py
+│           ├── task3/
+│           │   ├── task3_config.py
+│           │   ├── task3_env.py
+│           │   ├── task3_train.py
+│           │   └── task3_model_test.py
+│           └── task4/
+│               ├── task4_config.py
+│               ├── task4_env.py
+│               ├── task4_train.py
+│               └── task4_model_test.py
+├── tests/
+│   ├── task1/
+│   ├── task2/
+│   ├── task3/
+│   └── task4/
+├── scripts/
+│   └── ubuntu/
+├── logs/
+├── assets/
+│   ├── gifs/
+│   └── images/
+├── LICENSE
+└── README.md
+```
+ 
+| 目录 | 说明 |
+|---|---|
+| `configs/` | 每个任务的配置文件，便于统一管理任务参数。 |
+| `src/g1_rl/common/` | 通用网络模型、评估工具、日志工具、路径工具和 frame stack wrapper。 |
+| `src/g1_rl/tasks/taskX/` | 每个任务的配置、环境、训练脚本和模型测试脚本。 |
+| `tests/` | 每个任务的环境测试脚本。G1 四个任务目前没有独立 world 文件。 |
+| `scripts/ubuntu/` | Ubuntu 下的测试、训练、评估脚本。 |
+| `logs/` | 默认训练日志和 checkpoint 输出目录，建议不要上传 GitHub。 |
+| `assets/` | README 图片、GIF 和展示素材。 |
+ 
+---
+ 
+## 🛠️ 建议硬件与系统配置
+ 
+### 最低测试配置
+ 
+用于环境测试、smoke training、低并发调试和模型测试：
+ 
+- Ubuntu 22.04 / 24.04
+- NVIDIA GPU，建议显存 8GB 以上
+- Python 3.11
+- PyTorch 2.x
+- Isaac Sim / Isaac Lab
+- `skrl`, `tensorboard`, `tqdm`, `numpy`
+ 
+在显存较小的设备上，建议从很小的并发开始：
+ 
+```bash
+--num-envs 1
+--num-envs 4
+--num-envs 8
+--num-envs 16
+```
+ 
+### 推荐训练配置
+ 
+用于较大规模训练和长时间实验：
+ 
+- NVIDIA RTX 3090 / 4090 或同级别 GPU
+- 显存 24GB 或更高
+- Ubuntu 环境优先
+- Isaac Lab 环境能够稳定运行
+ 
+较大显存设备可以逐步尝试：
+ 
+```bash
+--num-envs 128
+--num-envs 256
+--num-envs 512
+```
+ 
+人形机器人比四足机器人更容易出现仿真不稳定、显存占用高、训练震荡等问题。不要一开始直接使用最大并发，建议先运行环境测试和 smoke training。
+ 
+---
+ 
+## 🚀 基础准备
+ 
+### 1. 安装 Isaac Lab 环境
+ 
+请先按照 NVIDIA Isaac Lab 官方文档安装 Isaac Sim / Isaac Lab，并确认 Isaac Lab 的 Python 环境可以正常导入：
+ 
+```bash
+python -c "import isaaclab; print('isaaclab ok')"
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+ 
+### 2. 克隆项目
+ 
+```bash
+git clone https://github.com/0324Lw/NVIDIA--Isaac-Lab-Unitree_G1-control.git unitree_g1_isaaclab_rl
+cd unitree_g1_isaaclab_rl
+```
+ 
+### 3. 设置 PYTHONPATH
+ 
+```bash
+export PYTHONPATH=$PWD/src:$PYTHONPATH
+```
+ 
+也可以直接使用 `scripts/ubuntu/` 下的脚本，这些脚本会自动设置项目路径。
+ 
+### 4. 设置 G1 资产与 motion 文件路径
+ 
+根据你的本地 Isaac Lab 路径设置：
+ 
+```bash
+export G1_USD_PATH="/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1.usd"
+export G1_TASK1_MOTION_FILE="/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1_walk.pt"
+export G1_TASK2_MOTION_FILE="/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1_omni_walk.pt"
+export G1_TASK3_MOTION_FILE="/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1_whole_body_walk.pt"
+export G1_TASK4_MOTION_FILE="/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1_omni_walk.pt"
+```
+ 
+说明：
+ 
+- `g1.usd` 是 Unitree G1 机器人模型。
+- `g1_walk.pt` 可用于 Task1 的基础行走参考。
+- `g1_omni_walk.pt` 可用于 Task2 全向运动和 Task4 鲁棒训练。
+- `g1_whole_body_walk.pt` 用于 Task3，全身参考中需要包含 `arm_swing_ref` 字段。
+- 这些 `.pt` motion 文件通常较大，建议不要上传到 GitHub。
+ 
+### 5. 安装 Python 依赖
+ 
+在 Isaac Lab 对应的 Python 环境中安装必要依赖：
+ 
+```bash
+pip install skrl tensorboard tqdm numpy
+```
+ 
+如果你的 Isaac Lab 环境已经包含部分依赖，可以按需跳过。
+ 
+---
+ 
+## ⚡ 快速开始
+ 
+### 1. 环境测试
+ 
+建议先从 Task1 开始测试，再进入后续任务。
+ 
+```bash
+bash scripts/ubuntu/test_task1_env.sh
+bash scripts/ubuntu/test_task2_env.sh
+bash scripts/ubuntu/test_task3_env.sh
+bash scripts/ubuntu/test_task4_env.sh
+```
+ 
+如果显存不足，可以打开对应脚本，降低 `--num-envs`。
+ 
+### 2. Smoke 训练
+ 
+Smoke training 只用于确认训练管线可以启动、日志可以写入、checkpoint 可以保存，不用于评估最终效果。
+ 
+```bash
+bash scripts/ubuntu/train_task1_skrl_smoke.sh
+bash scripts/ubuntu/train_task2_skrl_smoke.sh
+bash scripts/ubuntu/train_task3_skrl_smoke.sh
+bash scripts/ubuntu/train_task4_rma_smoke.sh
+```
+ 
+### 3. 模型测试
+ 
+训练完成后，可以使用 eval 脚本加载 checkpoint 做推理测试。
+ 
+```bash
+bash scripts/ubuntu/eval_task1_skrl.sh logs/task1/<run_name>/final_checkpoint/g1_task1_model.pt 1.0
+bash scripts/ubuntu/eval_task2_skrl.sh logs/task2/<run_name>/final_checkpoint/g1_task2_omni_model.pt 1.0
+bash scripts/ubuntu/eval_task3_skrl.sh logs/task3/<run_name>/final_checkpoint/g1_task3_whole_body_model.pt 1.0
+bash scripts/ubuntu/eval_task4_rma.sh logs/task4/<run_name>/final_checkpoint 1.0
+```
+ 
+---
+ 
+## 🧩 任务设计总览
+ 
+| Task | 目标 | 环境特点 | 训练重点 | 主要脚本 |
+|---|---|---|---|---|
+| Task1 | 基础低速行走 | G1 23 DoF 控制、基础 motion 参考、低速命令课程 | 稳定站立、低速前进、速度跟踪 | `task1_env.py`, `task1_train.py`, `task1_model_test.py` |
+| Task2 | 全向速度跟踪 | 前进、后退、侧向、转向命令；无 world 文件 | 全向移动、低速稳定、从 Task1 过渡 | `task2_env.py`, `task2_train.py`, `task2_model_test.py` |
+| Task3 | 全身协同行走 | 上肢摆臂参考、arm action gain 课程、whole-body reward | 腿部运动与手臂摆动协同 | `task3_env.py`, `task3_train.py`, `task3_model_test.py` |
+| Task4 | Sim2Real / RMA 鲁棒训练 | action delay、obs delay、motor efficiency、payload、push、privileged obs | 低速抗扰、teacher/student latent、student-only 部署 | `task4_env.py`, `task4_train.py`, `task4_model_test.py` |
+ 
+---
+ 
+## ➡️ Task 1：基础低速行走
+ 
+Task1 是最基础的人形机器人 locomotion 任务，用于让 Unitree G1 在平地上保持稳定姿态，并尝试低速前进和速度跟踪。
+ 
+### 任务目标
+ 
+- G1 在平地上保持站立和低速行走。
+- 跟踪简单线速度命令。
+- 学习基础步态，为 Task2 / Task3 提供可 warm-start 的 checkpoint。
+- 保持 23 DoF 动作空间和 123 维单帧观测结构。
+ 
+### 环境设计
+ 
+- 使用 Isaac Lab 中的 Unitree G1 USD 资产。
+- 动作输出为 23 个受控关节的目标位置残差。
+- 两个传感器关节 `xl330_joint` 和 `d455_joint` 固定，不参与策略控制。
+- 单帧 actor observation 为 123 维，5 帧堆叠后 policy input 为 615 维。
+- 训练代码使用 `skrl` PPO。
+ 
+### 常用命令
+ 
+```bash
+bash scripts/ubuntu/test_task1_env.sh
+bash scripts/ubuntu/train_task1_skrl_smoke.sh
+bash scripts/ubuntu/train_task1_skrl_laptop.sh
+bash scripts/ubuntu/eval_task1_skrl.sh logs/task1/<run_name>/final_checkpoint/g1_task1_model.pt 1.0
+```
+ 
+### 训练时重点观察
+ 
+- `Actual_Vx` 是否逐步接近 `Cmd_Vx`
+- `Base_Height` 是否稳定在目标高度附近
+- `Fall_Rate` 是否接近 0
+- `Contact_Count` 是否合理
+- `P_Foot_Slip` 是否过大
+- PPO 的 `approx_kl`、`clip_fraction` 是否稳定
+ 
+---
+ 
+## ➡️ Task 2：全向速度跟踪
+ 
+Task2 在 Task1 的基础上增加全向速度命令，让 G1 不只学习向前走，还要学习低速后退、侧向移动和转向。
+ 
+### 任务目标
+ 
+- 学习低速全向 locomotion。
+- 支持前进、后退、侧向和 yaw turning。
+- 为 Task3 whole-body 协同和 Task4 Sim2Real 鲁棒训练提供基础运动能力。
+ 
+### 环境设计
+ 
+- Task2 没有 world 文件，所有逻辑都在独立环境中实现。
+- 使用 `g1_omni_walk.pt` 作为简单 synthetic / reference motion。
+- 观测维度保持 123，5 帧堆叠后为 615。
+- 动作维度保持 23。
+- 使用 `skrl` PPO 训练。
+ 
+### 常用命令
+ 
+```bash
+bash scripts/ubuntu/test_task2_env.sh
+bash scripts/ubuntu/train_task2_skrl_smoke.sh
+bash scripts/ubuntu/train_task2_skrl_laptop.sh
+bash scripts/ubuntu/eval_task2_skrl.sh logs/task2/<run_name>/final_checkpoint/g1_task2_omni_model.pt 1.0
+```
+ 
+### 训练时重点观察
+ 
+- `Cmd_Vx` / `Actual_Vx`
+- `Cmd_Vy` / `Actual_Vy`
+- `Cmd_Wz` / `Actual_Wz`
+- `Lin_Error`
+- `Yaw_Error`
+- `Fall_Rate`
+- `Base_Height`
+ 
+---
+ 
+## ➡️ Task 3：全身协同行走
+ 
+Task3 在 Task2 全向运动基础上加入上肢动作，目标是让 G1 在低速运动时尝试形成更自然的全身协同，而不是只控制双腿。
+ 
+### 任务目标
+ 
+- 在低速 locomotion 的基础上引入上肢摆臂。
+- 使用 `arm_swing_ref` 提供手臂参考。
+- 使用 `Arm_Action_Gain` 课程逐步解冻上肢动作。
+- 尝试训练腿部运动和手臂摆动之间的同步。
+ 
+### 环境设计
+ 
+Task3 仍然没有 world 文件，重点在环境内部的 whole-body reward 和 motion manager：
+ 
+- `G1WholeBodyMotionManager` 读取 `g1_whole_body_walk.pt`。
+- motion 文件需要包含 `pos`、`vel`、`cmd`、`phase`、`contact_ref`、`mode_id`、`mode_names`、`joint_names`、`arm_swing_ref` 等字段。
+- 上肢 action gain 随课程从 0 逐步增加到 1。
+- 奖励中包含 `R_Arm_Ref`、`R_Arm_Vel_Ref`、`R_Arm_Leg_Sync`、`R_Arm_Cross` 等 whole-body 项。
+- 使用 `skrl` PPO 训练，建议从 Task2 checkpoint warm-start。
+ 
+### 常用命令
+ 
+```bash
+bash scripts/ubuntu/test_task3_env.sh
+bash scripts/ubuntu/train_task3_skrl_smoke.sh
+bash scripts/ubuntu/train_task3_skrl_laptop.sh
+bash scripts/ubuntu/eval_task3_skrl.sh logs/task3/<run_name>/final_checkpoint/g1_task3_whole_body_model.pt 1.0
+```
+ 
+### 训练时重点观察
+ 
+- `Fall_Rate`
+- `Base_Height`
+- `Cmd_Vx` / `Actual_Vx`
+- `Cmd_Wz` / `Actual_Wz`
+- `Arm_Action_Gain`
+- `Style_Scale`
+- `R_Arm_Ref`
+- `R_Arm_Leg_Sync`
+ 
+Task3 的动作效果不应被理解为专业的人形机器人舞蹈或武术控制。它只是一个纯 RL whole-body baseline，用于学习人形机器人全身奖励设计的难点。
+ 
+---
+ 
+## ➡️ Task 4：Sim2Real / RMA 鲁棒训练
+ 
+Task4 面向低速 Sim2Real 鲁棒控制。它不追求复杂动作，而是测试 G1 在动作延迟、观测延迟、电机效率变化、传感器噪声、负载、摩擦变化和外部推力下是否仍能保持基础运动稳定。
+ 
+### 任务目标
+ 
+- 在低速命令下保持站立和运动稳定。
+- 引入 Sim2Real 域随机化和扰动机制。
+- 使用 privileged observation 训练 teacher / latent 表征。
+- 导出 student-only 部署模型，推理时只使用 actor observation。
+ 
+### 环境设计
+ 
+Task4 是独立环境，不继承 Task1 / Task2 / Task3：
+ 
+- actor observation：123 维
+- privileged observation：162 维
+- frame stack：5
+- stacked actor observation：615 维
+- action dimension：23
+ 
+Sim2Real 随机化包括：
+ 
+- motor efficiency randomization
+- actuator lag / alpha scale
+- action delay
+- observation delay
+- action deadzone
+- action noise
+- action quantization
+- payload force proxy
+- friction / slip stress proxy
+- IMU / joint / height / foot noise
+- state dropout
+- contact dropout / false positive
+- external push disturbance
+ 
+训练代码是独立 RMA PPO，不使用 `skrl`。训练后会保存两个文件：
+ 
+```text
+g1_task4_rma_full_checkpoint.pt
+g1_task4_student_deploy.pt
+```
+ 
+其中 `g1_task4_student_deploy.pt` 是后续部署和模型测试优先使用的 student-only 模型。
+ 
+### 常用命令
+ 
+```bash
+bash scripts/ubuntu/test_task4_env.sh
+bash scripts/ubuntu/train_task4_rma_smoke.sh
+bash scripts/ubuntu/train_task4_rma_laptop.sh
+bash scripts/ubuntu/eval_task4_rma.sh logs/task4/<run_name>/final_checkpoint 1.0
+```
+ 
+### 训练时重点观察
+ 
+- `DR_Scale`
+- `Cmd_Vx` / `Actual_Vx`
+- `Fall_Rate`
+- `Base_Height`
+- `Push_Active_Rate`
+- `Motor_Eff_Mean`
+- `Action_Delay`
+- `Obs_Delay`
+- `Payload_Mass`
+- `Friction_Proxy`
+- `approx_kl`
+- `teacher_ratio`
+ 
+---
+ 
+## 📊 日志与模型保存
+ 
+训练日志默认保存在：
+ 
+```text
+logs/task1/
+logs/task2/
+logs/task3/
+logs/task4/
+```
+ 
+每个训练 run 通常包含：
+ 
+```text
+checkpoint_<env_steps>/
+final_checkpoint/
+train_metadata.pt
+```
+ 
+Task4 还会额外保存：
+ 
+```text
+g1_task4_rma_full_checkpoint.pt
+g1_task4_student_deploy.pt
+```
+ 
+可以使用 TensorBoard 查看训练过程：
+ 
+```bash
+tensorboard --logdir logs
+```
+ 
+训练过程中会记录以下类型的信息：
+ 
+- `reward_components`：各奖励项。
+- `events`：摔倒、超时、推力扰动等事件。
+- `telemetry`：速度、高度、课程阶段、DR scale 等训练指标。
+- `debug`：观测维度、reward 范围、异常值检查等。
+- `ppo` / `rma`：PPO 更新信息、KL、loss、学习率、teacher ratio 等。
+ 
+---
+ 
+## 💻 Ubuntu 使用说明
+ 
+当前仓库以 Ubuntu / Isaac Lab 环境为主。常用脚本在：
+ 
+```text
+scripts/ubuntu/
+```
+ 
+推荐顺序是：
+ 
+```bash
+bash scripts/ubuntu/test_task1_env.sh
+bash scripts/ubuntu/train_task1_skrl_smoke.sh
+bash scripts/ubuntu/eval_task1_skrl.sh logs/task1/<run_name>/final_checkpoint/g1_task1_model.pt 1.0
+```
+ 
+后续任务同理，先测试环境，再 smoke training，再进行长训练和模型测试。
+ 
+Windows 训练可以参考机器狗项目中的 Windows runner 方式移植，但本仓库 README 以 Ubuntu 为主。如果你在 Windows 上运行，需要根据本机的 Isaac Lab 路径、Python 路径、项目路径和显卡状态修改脚本。
+ 
+---
+ 
+## 🧭 推荐训练顺序
+ 
+推荐顺序：
+ 
+1. 先训练 Task1，获得基础低速行走 checkpoint。
+2. Task2 从 Task1 warm-start，训练全向速度跟踪。
+3. Task3 从 Task2 warm-start，训练上肢摆臂和全身协同。
+4. Task4 使用独立 RMA PPO 从零训练，重点测试低速 Sim2Real 鲁棒性。
+ 
+也可以每个任务从零开始训练，但人形机器人从零训练难度很高，早期 reward 容易陷入局部最优，调参成本会更大。
+ 
+---
+ 
+## 📌 当前状态与限制
+ 
+- 本项目主要用于学习、复现实验和开源交流。
+- 当前代码完成了四个任务的 Isaac Lab 环境、环境测试、训练脚本和模型测试脚本。
+- 这个仓库是 pure-RL baseline，不代表专业人形机器人动作控制最终路线。
+- 复杂舞蹈、武术、拟人动作更适合结合动捕数据、重定向、模仿学习、HoloSoma、OmniRetarget、BeyondMimic 等技术路线。
+- Task3 的 whole-body reward 只能提供简单上肢协同约束，不等同于高质量动作模仿。
+- Task4 的 RMA 结构是学习版实现，后续仍可继续扩展 adaptation module、部署接口和真机安全检查。
+- 不同 Isaac Lab / Isaac Sim 版本之间可能存在 API 差异，需要根据本地环境做少量适配。
+- 训练效果会受到 GPU、并发数、随机种子、训练步数和超参数影响。
+- 本项目不是官方 Unitree 或 NVIDIA 项目，只是个人学习和开源整理。
+ 
+---
+ 
+## ❓ 常见问题
+ 
+### 1. `ModuleNotFoundError: No module named torch`
+ 
+通常是没有进入 Isaac Lab 对应的 Python / conda 环境。请先确认：
+ 
+```bash
+which python
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+ 
+### 2. Isaac Lab / `pxr` 导入报错
+ 
+涉及 Isaac Lab、USD、`pxr` 的文件需要在 Isaac Sim / Isaac Lab 环境中运行。测试脚本中如果需要 AppLauncher，应保证先启动 AppLauncher，再导入依赖 Isaac Lab 的环境文件。
+ 
+### 3. 训练启动后显存不足怎么办？
+ 
+先降低并发数：
+ 
+```bash
+--num-envs 1
+--num-envs 4
+--num-envs 8
+--num-envs 16
+--num-envs 32
+```
+ 
+确认能跑通后再逐步增加。
+ 
+### 4. Smoke training 的效果不好正常吗？
+ 
+正常。Smoke training 只用于检查训练流程是否能启动和保存模型，不代表最终策略效果。
+ 
+### 5. 为什么 G1 的纯 RL 训练比 Go2 难很多？
+ 
+人形机器人自由度更高、接触更复杂、稳定区域更小，奖励函数也更难设计。纯 RL 可以作为学习 baseline，但复杂拟人动作通常需要结合模仿学习、动捕数据、重定向和更完整的 Sim2Real 流程。
+ 
+### 6. 为什么 Task4 不使用 skrl？
+ 
+Task4 当前保留了原始 RMA 训练思路，使用独立 PPO 实现 teacher / student latent、privileged observation 和 student-only deploy。这样更方便展示 RMA 的结构，也避免把 Task4 强行改成普通 skrl PPO 后丢失原始代码中的学习价值。
+ 
+### 7. 为什么要先跑环境测试？
+ 
+人形机器人训练中的很多问题不是 PPO 本身造成的，而是 reset、观测维度、关节映射、传感器关节、接触检测、奖励项或终止条件有问题。先跑测试可以减少后续训练调参的时间。
+ 
+### 8. 这个项目能直接真机部署吗？
+ 
+不能直接保证。这个仓库目前是 Isaac Lab 仿真学习 baseline。真机部署还需要安全限幅、低层控制接口、状态估计、延迟测试、动力学参数校准、实机保护逻辑和大量 Sim2Real 验证。
+ 
+---
+ 
+## 📄 License
+ 
+This project is released under the MIT License.
+ 
+See the `LICENSE` file for details.
+ 
+---
+ 
+## 🙏 Acknowledgements
+ 
+感谢以下开源项目和工具：
+ 
+- NVIDIA Isaac Sim / Isaac Lab
+- Unitree G1 robot asset and related documentation
+- PyTorch
+- skrl reinforcement learning library
+- TensorBoard
+- tqdm
+- 机器人强化学习、模仿学习和 Isaac Lab 开源社区
+ 
+如果这个项目对你有帮助，欢迎参考、修改和继续完善。也欢迎指出代码或文档中的问题。
+ 
+联系邮箱：2559906288@qq.com  
+小红书账号：574661219
