@@ -5,7 +5,7 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.x-orange)
 ![Isaac Lab](https://img.shields.io/badge/Isaac%20Lab-2.x-brightgreen)
 ![skrl](https://img.shields.io/badge/RL-skrl%20PPO%20%7C%20RMA-purple)
-![OS](https://img.shields.io/badge/OS-Ubuntu-green)
+![OS](https://img.shields.io/badge/OS-Ubuntu%20%7C%20Windows-green)
  
 本项目是一个基于 NVIDIA Isaac Lab 的 Unitree G1 人形机器人强化学习控制项目。项目包含 4 个递进任务：基础低速行走、全向速度跟踪、全身协同行走、Sim2Real / RMA 鲁棒训练。
  
