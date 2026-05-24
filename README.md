@@ -1,8 +1,4 @@
-Unitree G1 README.md Markdown 源码
-说明：本文档内容可复制到 GitHub 仓库根目录的 README.md 中。正文保留 Markdown 标题、表格、代码块和图片路径。
-
-
-# 🤖 基于 NVIDIA Isaac Lab 的 Unitree G1 人形机器人纯 RL 控制项目
+# 🧍 基于 NVIDIA Isaac Lab 的 Unitree G1 人形机器人纯 RL 控制项目
  
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -13,11 +9,7 @@ Unitree G1 README.md Markdown 源码
  
 本项目是一个基于 NVIDIA Isaac Lab 的 Unitree G1 人形机器人强化学习控制项目。项目包含 4 个递进任务：基础低速行走、全向速度跟踪、全身协同行走、Sim2Real / RMA 鲁棒训练。
  
-这个仓库是我在学习人形机器人强化学习控制过程中整理出来的一版纯 RL baseline。最开始我按照机器狗、无人机、无人车项目的思路去写 G1 代码，后来在继续学习 HoloSoma、OmniRetarget、BeyondMimic、OmniTrack、Any2Track 等工作后，我逐渐认识到：复杂人形机器人动作不能只依赖手写奖励和纯强化学习，专业路线通常需要动捕数据、重定向、模仿学习、生成式动作先验和 Sim2Real 体系。
- 
-因此，这个仓库不会把自己包装成“最优人形机器人控制方案”。它更适合作为一个早期探索版、学习版、纯 RL 教育 baseline 保存下来。它记录了我从四足机器人和其他强化学习任务迁移到人形机器人控制时的经验、困难和踩坑，也希望能为同样在学习 Isaac Lab、人形机器人控制和强化学习的同学提供一个可以参考、可以运行、可以继续修改的基础工程。
- 
-项目重点不是追求完美动作效果，而是尽量把每个任务的环境、测试、训练、评估和日志拆清楚。代码中仍然有很多可以继续改进的地方，欢迎大家根据自己的 Isaac Lab 版本、显卡配置和研究目标继续修改。
+这个仓库是我在学习人形机器人强化学习控制过程中整理出来的一版纯 RL baseline,复杂人形机器人动作不能只依赖手写奖励和纯强化学习，专业路线通常需要动捕数据、重定向、模仿学习、生成式动作先验和 Sim2Real 体系。因此，这个仓库更适合作为一个早期探索版、学习版、纯 RL baseline 保存下来，希望能为在学习 Isaac Lab、人形机器人控制和强化学习的同学提供一个可以参考、可以运行、可以继续修改的基础工程。项目重点不是追求完美动作效果，而是尽量把每个任务的环境、测试、训练、评估和日志拆清楚。代码中仍然有很多可以继续改进的地方，欢迎大家根据自己的 Isaac Lab 版本、显卡配置和研究目标继续修改。
  
 ---
  
@@ -27,8 +19,6 @@ Unitree G1 README.md Markdown 源码
 |---|---|
 | 基础行走 / 全向运动 | ![G1 locomotion demo](assets/gifs/g1_locomotion_demo.gif) |
 | 全身协同 / Sim2Real 鲁棒训练 | ![G1 whole-body sim2real demo](assets/gifs/g1_whole_body_sim2real_demo.gif) |
- 
-> 说明：上面的 GIF 路径是预留位置。你可以把自己录制的仿真效果放到 `assets/gifs/` 目录下，并保持文件名一致，或者在 README 中改成自己的文件名。
  
 ---
  
@@ -41,7 +31,6 @@ Unitree G1 README.md Markdown 源码
 - 所有 G1 任务环境代码独立实现，不依赖其他任务环境继承，避免任务之间互相污染。
 - 每个任务提供独立环境测试、训练脚本和模型测试脚本。
 - 使用 `tqdm` 风格训练进度条，方便实时查看训练速度、奖励、摔倒率和关键遥测指标。
-- 保留纯 RL baseline 的学习价值，同时明确说明它不是 HoloSoma / BeyondMimic / OmniRetarget 这类专业模仿学习路线。
  
 ---
  
@@ -103,9 +92,9 @@ unitree_g1_isaaclab_rl/
 | `configs/` | 每个任务的配置文件，便于统一管理任务参数。 |
 | `src/g1_rl/common/` | 通用网络模型、评估工具、日志工具、路径工具和 frame stack wrapper。 |
 | `src/g1_rl/tasks/taskX/` | 每个任务的配置、环境、训练脚本和模型测试脚本。 |
-| `tests/` | 每个任务的环境测试脚本。G1 四个任务目前没有独立 world 文件。 |
+| `tests/` | 每个任务的环境测试脚本。 |
 | `scripts/ubuntu/` | Ubuntu 下的测试、训练、评估脚本。 |
-| `logs/` | 默认训练日志和 checkpoint 输出目录，建议不要上传 GitHub。 |
+| `logs/` | 默认训练日志和 checkpoint 输出目录。 |
 | `assets/` | README 图片、GIF 和展示素材。 |
  
 ---
@@ -117,7 +106,7 @@ unitree_g1_isaaclab_rl/
 用于环境测试、smoke training、低并发调试和模型测试：
  
 - Ubuntu 22.04 / 24.04
-- NVIDIA GPU，建议显存 8GB 以上
+- NVIDIA GPU，建议显存 16GB 以上
 - Python 3.11
 - PyTorch 2.x
 - Isaac Sim / Isaac Lab
@@ -619,6 +608,7 @@ See the `LICENSE` file for details.
 - 机器人强化学习、模仿学习和 Isaac Lab 开源社区
  
 如果这个项目对你有帮助，欢迎参考、修改和继续完善。也欢迎指出代码或文档中的问题。
- 
+
 联系邮箱：2559906288@qq.com  
 小红书账号：574661219
+
