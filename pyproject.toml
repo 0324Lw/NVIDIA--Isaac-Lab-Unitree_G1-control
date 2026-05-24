@@ -1,0 +1,9 @@
+[project]
+name = "unitree-g1-isaaclab-rl"
+version = "0.1.0"
+description = "Educational pure-RL baseline for Unitree G1 humanoid control in Isaac Lab."
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]

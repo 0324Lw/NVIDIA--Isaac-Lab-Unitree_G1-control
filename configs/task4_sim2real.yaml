@@ -1,0 +1,44 @@
+task:
+  name: "g1_task4_sim2real_robustness"
+  robot: "Unitree G1"
+  project_type: "educational pure-RL baseline"
+  description: >
+    Task4 focuses on low-speed robust locomotion and sim-to-real stress testing.
+    It keeps the same 23-DoF action space and 123-D actor observation space,
+    but introduces domain randomization, action latency, observation latency,
+    sensor noise, contact dropout, external pushes, payload approximation,
+    friction proxy, and privileged critic state.
+
+positioning:
+  note:
+    - "This is a pure-RL educational baseline."
+    - "It is not HoloSoma, OmniRetarget, BeyondMimic, AMP, or motion imitation."
+    - "Task4 is designed for robustness, not high-speed humanoid performance."
+
+assets:
+  usd_path_env: "G1_USD_PATH"
+  motion_file_env: "G1_TASK4_MOTION_FILE"
+  fallback_motion_file_env: "G1_TASK2_MOTION_FILE"
+  default_usd_path: "/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1.usd"
+  default_motion_file: "/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1_omni_walk.pt"
+
+spaces:
+  action_dim: 23
+  actor_obs_dim: 123
+  privileged_obs_dim: 162
+  frame_stack: 5
+  stacked_actor_obs_dim: 615
+
+sim2real_randomization:
+  motor_efficiency: true
+  action_delay: true
+  observation_delay: true
+  action_deadzone: true
+  action_noise: true
+  action_quantization: true
+  payload_force_proxy: true
+  friction_proxy: true
+  sensor_noise: true
+  state_dropout: true
+  contact_dropout: true
+  external_push: true

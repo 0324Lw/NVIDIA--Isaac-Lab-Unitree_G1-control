@@ -1,0 +1,47 @@
+task:
+  name: "g1_task2_omni_locomotion"
+  robot: "Unitree G1"
+  project_type: "educational pure-RL baseline"
+  description: >
+    Task2 extends Task1 assisted locomotion to omni-directional command tracking.
+    It uses vx / vy / wz commands, command curriculum, command smoothing,
+    reference-style rewards from an omni walking motion file, and a small early
+    harness that is gradually removed.
+
+assets:
+  usd_path_env: "G1_USD_PATH"
+  motion_file_env: "G1_TASK2_MOTION_FILE"
+  default_usd_path: "/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1.usd"
+  default_motion_file: "/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1_omni_walk.pt"
+
+robot:
+  total_joints_in_usd: 25
+  sensor_joints:
+    - "xl330_joint"
+    - "d455_joint"
+  controlled_joint_dim: 23
+  action_dim: 23
+  foot_bodies:
+    - "left_ankle_roll_link"
+    - "right_ankle_roll_link"
+
+observation:
+  single_frame_obs_dim: 123
+  train_frame_stack: 5
+  stacked_obs_dim: 615
+
+motion_file_required_keys:
+  - "pos"
+  - "vel"
+  - "cmd"
+  - "num_frames"
+  - "joint_names"
+  - "phase"
+  - "contact_ref"
+  - "mode_id"
+  - "mode_names"
+
+notes:
+  - "This is a pure-RL humanoid baseline, not a professional imitation-learning pipeline."
+  - "Task2 should remain compatible with Task1 action_dim and obs_dim."
+  - "Training may use Task1 checkpoint warm-start, but old checkpoints are not required."

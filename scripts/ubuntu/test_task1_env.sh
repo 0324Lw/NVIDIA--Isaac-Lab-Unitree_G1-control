@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -e
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${PROJECT_ROOT}"
+
+export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH}"
+
+# Optional overrides:
+# export G1_USD_PATH="/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1.usd"
+# export G1_TASK1_MOTION_FILE="/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1_walk.pt"
+
+echo "============================================================"
+echo "G1 Task1 Env Test"
+echo "PROJECT_ROOT=${PROJECT_ROOT}"
+echo "PYTHON=$(which python)"
+echo "G1_USD_PATH=${G1_USD_PATH:-<default from Task1Config>}"
+echo "G1_TASK1_MOTION_FILE=${G1_TASK1_MOTION_FILE:-<default from Task1Config>}"
+echo "============================================================"
+
+python - <<'PY'
+import sys
+print("[CHECK] Python:", sys.executable)
+
+try:
+    import torch
+    print("[CHECK] torch:", torch.__version__)
+    print("[CHECK] cuda available:", torch.cuda.is_available())
+except Exception as e:
+    raise RuntimeError("Current Python cannot import torch. Please activate conda env: isaaclab") from e
+
+try:
+    import isaaclab
+    print("[CHECK] isaaclab: ok")
+except Exception as e:
+    raise RuntimeError("Current Python cannot import isaaclab. Please activate IsaacLab conda env.") from e
+PY
+
+python tests/task1/task1_env_test.py \
+  --num-envs 8 \
+  --steps 160 \
+  --collect-interval 40 \
+  --rollout-k 0.10 \
+  --headless \
+  --test-device cuda:0

@@ -1,0 +1,50 @@
+task:
+  name: "g1_task1_assisted_locomotion"
+  robot: "Unitree G1"
+  project_type: "educational pure-RL baseline"
+  description: >
+    Task1 is an early pure reinforcement learning baseline for Unitree G1 assisted locomotion.
+    It uses hand-designed rewards, a simple walking reference motion, and a gradually reduced harness force.
+    This is not intended to replace imitation-learning or motion-retargeting based humanoid control.
+
+assets:
+  usd_path_env: "G1_USD_PATH"
+  motion_file_env: "G1_TASK1_MOTION_FILE"
+  default_usd_path: "/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1.usd"
+  default_motion_file: "/home/lw/IsaacLab/tutorials/03_humanoid_basics/g1_walk.pt"
+
+robot:
+  total_joints_in_usd: 25
+  sensor_joints:
+    - "xl330_joint"
+    - "d455_joint"
+  controlled_joint_dim: 23
+  action_dim: 23
+  foot_bodies:
+    - "left_ankle_roll_link"
+    - "right_ankle_roll_link"
+
+observation:
+  single_frame_obs_dim: 123
+  train_frame_stack: 5
+  stacked_obs_dim: 615
+
+control:
+  sim_dt: 0.005
+  decimation: 4
+  control_dt: 0.02
+  max_episode_length: 1000
+
+curriculum:
+  total_steps: 300000000
+  stages:
+    - "stand with strong harness"
+    - "marching with harness"
+    - "assisted slow walking"
+    - "normal walking"
+    - "reduced harness reference-style walking"
+
+notes:
+  - "This repository keeps the pure-RL humanoid baseline for learning and comparison."
+  - "Complex humanoid skills usually require imitation learning, retargeted motion data, or motion priors."
+  - "HoloSoma / OmniRetarget / BeyondMimic style pipelines should be treated as a separate professional route."
